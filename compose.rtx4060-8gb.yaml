@@ -1,0 +1,109 @@
+# MinerU 4.x WebUI - Configuración para NVIDIA RTX 4060 Laptop (8 GB VRAM)
+# Archivo autocontenido listo para pegar en Arcane (Projects -> New Project -> Build & Deploy).
+# Ejecuta VLM (vLLM) + modelos pequeños (Torch) 100% en GPU NVIDIA CUDA con límite de VRAM seguro para 8 GB.
+# Acceso WebUI tras desplegar: http://<IP-DEL-EQUIPO>:7860
+
+services:
+  mineru-vlm:
+    image: mineru:4-vllm
+    container_name: mineru-vlm
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile_inline: |
+        # Imagen base oficial vLLM 0.21.0 con CUDA 13.0 (Compute Capability 7.0 a 12.1; RTX 4060 = 8.9).
+        # IMPORTANTE: Si `nvidia-smi` en tu notebook muestra CUDA Version 12.x,
+        # comentá la línea siguiente y descomentá la variante cu129:
+        FROM vllm/vllm-openai:v0.21.0
+        # FROM vllm/vllm-openai:v0.21.0-cu129
+
+        RUN apt-get update && \
+            apt-get install -y libgl1 && \
+            apt-get clean && \
+            rm -rf /var/lib/apt/lists/*
+
+        RUN python3 -m pip install -U 'mineru[torch]>=4.0,<5' 'transformers>=5.10.1,<5.23.0' --break-system-packages && \
+            python3 -m pip cache purge
+
+        # Motor vLLM en CUDA + modelos pequeños Torch (100% GPU NVIDIA; evita fallback a CPU de llama-cpp).
+        ENV MINERU_MODEL_SMALL_BACKEND=torch \
+            MINERU_MODEL_VLM_ENGINE=vllm
+
+        # Pre-descarga los pesos de Hugging Face dentro de la imagen (standard).
+        RUN /bin/bash -c "mineru-kit models download --tier standard --small-backend torch --vlm-engine vllm -s huggingface"
+
+        ENTRYPOINT ["/bin/bash", "-c", "export MINERU_MODEL_SOURCE=local && exec \"$@\"", "--"]
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_TELEMETRY_DISABLED: "1"
+      TZ: America/Argentina/Buenos_Aires  # Cambiá a UTC u otra zona horaria si preferís
+    entrypoint: ["mineru-kit"]
+    command:
+      - vlm-server
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "30000"
+      - --gpu-memory-utilization
+      - "0.65"  # Rango recomendado en 8 GB VRAM: 0.60 a 0.70 (dejando algo de margen para Windows).
+      - --enforce-eager
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]  # Usá `nvidia-smi -L` para confirmar el índice de tu GPU NVIDIA
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:30000/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  mineru-webui:
+    image: mineru:4-vllm
+    pull_policy: never
+    container_name: mineru-webui
+    restart: unless-stopped
+    depends_on:
+      mineru-vlm:
+        condition: service_healthy
+    ports:
+      - "7860:7860"
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_MODEL_VLM_SERVER_URL: http://mineru-vlm:30000/v1
+      MINERU_TELEMETRY_DISABLED: "1"
+      TZ: America/Argentina/Buenos_Aires  # Cambiá a UTC u otra zona horaria si preferís
+    entrypoint: ["mineru-kit"]
+    command:
+      - webui
+      - --server-name
+      - "0.0.0.0"
+      - --server-port
+      - "7860"
+      - --tier
+      - standard
+      # Cambiá `standard` por `basic` si preferís deshabilitar VLM por completo.
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]  # Usá `nvidia-smi -L` para confirmar el índice de tu GPU NVIDIA
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:7860/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s

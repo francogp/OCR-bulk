@@ -1,0 +1,311 @@
+# MinerU 4.x WebUI + Watcher Automático por Carpeta (RTX 4060 8 GB VRAM)
+# Mantiene activa la WebUI (1 archivo a la vez en http://localhost:7860) y agrega un watcher
+# que procesa en lote todos los archivos copiados a la carpeta de entrada, compartiendo una
+# única cola GPU en `mineru-api` + `mineru-vlm`.
+#
+# Para adaptarlo a la RTX 3090 (24 GB VRAM):
+#   1) En `mineru-vlm`, podés quitar `--enforce-eager` y ajustar `--gpu-memory-utilization` a "0.7" (o quitarlo).
+#   2) En `mineru-api`, cambiá `--tier standard` a `--tier advanced`.
+
+services:
+  mineru-vlm:
+    image: mineru:4-vllm
+    container_name: mineru-vlm
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile_inline: |
+        # Imagen base oficial vLLM 0.21.0 con CUDA 13.0 (Compute Capability 7.0 a 12.1; RTX 4060 = 8.9).
+        # IMPORTANTE: Si `nvidia-smi` muestra CUDA Version 12.x, comentá la línea siguiente y descomentá cu129:
+        FROM vllm/vllm-openai:v0.21.0
+        # FROM vllm/vllm-openai:v0.21.0-cu129
+
+        RUN apt-get update && \
+            apt-get install -y libgl1 && \
+            apt-get clean && \
+            rm -rf /var/lib/apt/lists/*
+
+        RUN python3 -m pip install -U 'mineru[torch]>=4.0,<5' 'transformers>=5.10.1,<5.23.0' --break-system-packages && \
+            python3 -m pip cache purge
+
+        ENV MINERU_MODEL_SMALL_BACKEND=torch \
+            MINERU_MODEL_VLM_ENGINE=vllm
+
+        RUN /bin/bash -c "mineru-kit models download --tier standard --small-backend torch --vlm-engine vllm -s huggingface"
+
+        ENTRYPOINT ["/bin/bash", "-c", "export MINERU_MODEL_SOURCE=local && exec \"$@\"", "--"]
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_TELEMETRY_DISABLED: "1"
+      TZ: ${TZ:-America/Argentina/Buenos_Aires}
+    entrypoint: ["mineru-kit"]
+    command:
+      - vlm-server
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "30000"
+      - --gpu-memory-utilization
+      - "${MINERU_VLM_GPU_MEMORY_UTILIZATION:-0.65}"  # En RTX 4060 8 GB: 0.60 a 0.70. En RTX 3090 24 GB podés usar 0.70.
+      - --enforce-eager  # En RTX 3090 podés quitar esta línea.
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${MINERU_GPU_ID:-0}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:30000/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  mineru-api:
+    image: mineru:4-vllm
+    pull_policy: never
+    container_name: mineru-api
+    restart: unless-stopped
+    depends_on:
+      mineru-vlm:
+        condition: service_healthy
+    ports:
+      - "${MINERU_API_PORT:-8000}:8000"
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_MODEL_VLM_SERVER_URL: http://mineru-vlm:30000/v1
+      MINERU_TELEMETRY_DISABLED: "1"
+      TZ: ${TZ:-America/Argentina/Buenos_Aires}
+    entrypoint: ["mineru-kit"]
+    command:
+      - api-server
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --tier
+      - ${MINERU_API_TIER:-standard}  # En RTX 3090 podés cambiar a `advanced`.
+      - --concurrency
+      - "1"
+      - --vlm-server-url
+      - http://mineru-vlm:30000/v1
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${MINERU_GPU_ID:-0}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/v1/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  mineru-webui:
+    image: mineru:4-vllm
+    pull_policy: never
+    container_name: mineru-webui
+    restart: unless-stopped
+    depends_on:
+      mineru-api:
+        condition: service_healthy
+    ports:
+      - "${MINERU_WEBUI_PORT:-7860}:7860"
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_TELEMETRY_DISABLED: "1"
+      TZ: ${TZ:-America/Argentina/Buenos_Aires}
+    entrypoint: ["mineru-kit"]
+    command:
+      - webui
+      - --server-name
+      - "0.0.0.0"
+      - --server-port
+      - "7860"
+      - --api-url
+      - http://mineru-api:8000
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:7860/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  mineru-watcher:
+    image: mineru:4-vllm
+    pull_policy: never
+    container_name: mineru-watcher
+    restart: unless-stopped
+    depends_on:
+      mineru-api:
+        condition: service_healthy
+    volumes:
+      - ${MINERU_INPUT_DIR:-./libros/entrada}:/data/entrada
+      - ${MINERU_OUTPUT_DIR:-./libros/salida}:/data/salida
+      - ${MINERU_PROCESSED_DIR:-./libros/procesados}:/data/procesados
+      - ${MINERU_FAILED_DIR:-./libros/fallidos}:/data/fallidos
+    environment:
+      MINERU_API_URL: http://mineru-api:8000
+      MINERU_TELEMETRY_DISABLED: "1"
+      TZ: ${TZ:-America/Argentina/Buenos_Aires}
+      WATCH_INPUT_DIR: /data/entrada
+      WATCH_OUTPUT_DIR: /data/salida
+      WATCH_PROCESSED_DIR: /data/procesados
+      WATCH_FAILED_DIR: /data/fallidos
+      WATCH_ERROR_REPORT: /data/salida/errores.md
+      WATCH_TIER: ${WATCH_TIER:-standard}  # flash, basic, standard (o advanced en RTX 3090)
+      WATCH_OCR_MODE: ${WATCH_OCR_MODE:-ocr}  # auto, txt u ocr (ocr recomendado para libros escaneados)
+      WATCH_EXTENSIONS: ${WATCH_EXTENSIONS:-.pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff}
+      WATCH_POLL_INTERVAL: "${WATCH_POLL_INTERVAL:-5}"
+      WATCH_STABLE_SECONDS: "${WATCH_STABLE_SECONDS:-3}"
+      WATCH_TIMEOUT_SECONDS: "${WATCH_TIMEOUT_SECONDS:-3600}"
+    entrypoint: ["python3", "-u", "-c"]
+    command:
+      - |
+        import os
+        import shutil
+        import time
+        import traceback
+        from datetime import datetime
+        from pathlib import Path
+
+        from mineru.parser import MinerUApiParser
+        from mineru.parser.writer import FileBasedDataWriter
+
+        API_URL = os.environ.get("MINERU_API_URL", "http://mineru-api:8000")
+        INPUT_DIR = Path(os.environ.get("WATCH_INPUT_DIR", "/data/entrada"))
+        OUTPUT_DIR = Path(os.environ.get("WATCH_OUTPUT_DIR", "/data/salida"))
+        PROCESSED_DIR = Path(os.environ.get("WATCH_PROCESSED_DIR", "/data/procesados"))
+        FAILED_DIR = Path(os.environ.get("WATCH_FAILED_DIR", "/data/fallidos"))
+        ERROR_REPORT = Path(os.environ.get("WATCH_ERROR_REPORT", "/data/salida/errores.md"))
+        TIER = os.environ.get("WATCH_TIER", "standard")
+        OCR_MODE = os.environ.get("WATCH_OCR_MODE", "ocr")
+        EXTENSIONS = {
+            ext.strip().lower()
+            for ext in os.environ.get(
+                "WATCH_EXTENSIONS", ".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff"
+            ).split(",")
+            if ext.strip()
+        }
+        POLL_INTERVAL = max(1.0, float(os.environ.get("WATCH_POLL_INTERVAL", "5")))
+        STABLE_SECONDS = max(0.5, float(os.environ.get("WATCH_STABLE_SECONDS", "3")))
+        TIMEOUT_SECONDS = max(60.0, float(os.environ.get("WATCH_TIMEOUT_SECONDS", "3600")))
+        TEMP_SUFFIXES = (".part", ".tmp", ".crdownload")
+
+        for folder in (INPUT_DIR, OUTPUT_DIR, PROCESSED_DIR, FAILED_DIR, ERROR_REPORT.parent):
+            folder.mkdir(parents=True, exist_ok=True)
+
+        def unique_path(directory: Path, name: str) -> Path:
+            candidate = directory / name
+            if not candidate.exists():
+                return candidate
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            p = Path(name)
+            return directory / f"{p.stem}_{stamp}{p.suffix}"
+
+        def wait_until_stable(path: Path) -> bool:
+            prev = None
+            for _ in range(10):
+                if not path.exists():
+                    return False
+                stat = path.stat()
+                curr = (stat.st_size, stat.st_mtime)
+                if prev is not None and curr == prev and stat.st_size > 0:
+                    return True
+                prev = curr
+                time.sleep(STABLE_SECONDS)
+            return path.exists() and path.stat().st_size > 0
+
+        def append_error(filename: str, exc: BaseException) -> None:
+            is_new = not ERROR_REPORT.exists()
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            tb_lines = tb.strip().splitlines()[-15:]
+            entry = (
+                f"## {timestamp} - `{filename}`\n\n"
+                f"- **Error:** `{type(exc).__name__}: {exc}`\n\n"
+                "```text\n"
+                + "\n".join(tb_lines)
+                + "\n```\n\n"
+            )
+            with ERROR_REPORT.open("a", encoding="utf-8") as fh:
+                if is_new:
+                    fh.write("# Registro de errores - MinerU Watcher\n\n")
+                fh.write(entry)
+
+        def discover_files() -> list[Path]:
+            files = []
+            for item in INPUT_DIR.iterdir():
+                if not item.is_file():
+                    continue
+                lower = item.name.lower()
+                if item.name.startswith(".") or lower.endswith(TEMP_SUFFIXES):
+                    continue
+                if item.suffix.lower() in EXTENSIONS:
+                    files.append(item)
+            return sorted(files, key=lambda p: p.name.lower())
+
+        parser = MinerUApiParser(
+            api_url=API_URL,
+            tier=TIER,
+            ocr_mode=OCR_MODE,
+            include_images=True,
+            poll_timeout_seconds=TIMEOUT_SECONDS,
+        )
+
+        print(
+            f"[watcher] Vigilando {INPUT_DIR} -> {OUTPUT_DIR} "
+            f"(tier={TIER}, ocr_mode={OCR_MODE}, api={API_URL})"
+        )
+
+        while True:
+            try:
+                pending = discover_files()
+                if not pending:
+                    time.sleep(POLL_INTERVAL)
+                    continue
+
+                print(f"[watcher] Detectados {len(pending)} archivo(s) para procesar en lote.")
+                for src in pending:
+                    if not src.exists():
+                        continue
+                    if not wait_until_stable(src):
+                        print(f"[watcher] Saltando archivo incompleto o eliminado: {src.name}")
+                        continue
+
+                    tmp_out = OUTPUT_DIR / f".tmp_{src.stem}_{int(time.time())}"
+                    started = time.time()
+                    try:
+                        print(f"[watcher] Procesando: {src.name}")
+                        result = parser.parse(str(src))
+                        tmp_out.mkdir(parents=True, exist_ok=True)
+                        result.save(FileBasedDataWriter(str(tmp_out)))
+                        final_out = unique_path(OUTPUT_DIR, src.stem)
+                        tmp_out.rename(final_out)
+                        moved_src = unique_path(PROCESSED_DIR, src.name)
+                        shutil.move(str(src), str(moved_src))
+                        elapsed = time.time() - started
+                        print(
+                            f"[watcher] OK ({elapsed:.1f}s): {src.name} -> {final_out.name}"
+                        )
+                    except Exception as exc:
+                        shutil.rmtree(tmp_out, ignore_errors=True)
+                        print(f"[watcher] ERROR procesando {src.name}: {exc}")
+                        append_error(src.name, exc)
+                        if src.exists():
+                            failed_dest = unique_path(FAILED_DIR, src.name)
+                            shutil.move(str(src), str(failed_dest))
+            except Exception as loop_exc:
+                print(f"[watcher] Error inesperado en el bucle principal: {loop_exc}")
+                time.sleep(POLL_INTERVAL)
