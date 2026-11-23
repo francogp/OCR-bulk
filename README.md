@@ -12,7 +12,8 @@ Ambas configuraciones usan `build.dockerfile_inline` (Compose Spec ≥ 2.17) y o
 | --- | --- | --- | --- | --- | --- |
 | [compose.rtx3090-24gb.yaml](compose.rtx3090-24gb.yaml) | RTX 3090 (Ampere CC 8.6) | 24 GB | `vllm` + `torch` | `flash`, `basic`, `standard`, `advanced` | Máxima velocidad y calidad en libros completos complejos |
 | [compose.rtx4060-8gb.yaml](compose.rtx4060-8gb.yaml) | RTX 4060 Laptop (Ada CC 8.9) | 8 GB | `vllm` (`mineru-vlm` con `--gpu-memory-utilization 0.65` + `--enforce-eager`) + `torch` | `flash`, `basic`, `standard` | Pruebas y lotes en notebook 100% en CUDA sin errores de memoria (OOM) |
-| [compose.watcher-rtx4060-8gb.yaml](compose.watcher-rtx4060-8gb.yaml) | RTX 4060 8 GB (adaptable a 3090) | 8 GB+ | `vllm` + `torch` vía `mineru-api` | `flash`, `basic`, `standard` | WebUI en `7860` + procesamiento automático por carpeta vigilada (`mineru-watcher`) |
+| [compose.watcher-rtx4060-8gb.yaml](compose.watcher-rtx4060-8gb.yaml) | RTX 4060 Laptop | 8 GB | `vllm` (`0.65` + `--enforce-eager`) + `torch` vía `mineru-api` | `flash`, `basic`, `standard` | WebUI en `7860` + carpeta vigilada automática (`mineru-watcher`) en 8 GB |
+| [compose.watcher-rtx3090-24gb.yaml](compose.watcher-rtx3090-24gb.yaml) | RTX 3090 | 24 GB | `vllm` (`0.70`, CUDA Graphs activos) + `torch` vía `mineru-api` | `flash`, `basic`, `standard`, `advanced` | WebUI en `7860` + carpeta vigilada automática (`mineru-watcher`) en 24 GB |
 
 > **Nota sobre tiempos y disco del primer build:** La primera compilación descarga la imagen base (~8–10 GB), instala `mineru[torch]>=4.0,<5` y pre-descarga los modelos de Hugging Face dentro de la imagen (`MINERU_MODEL_SOURCE=local`). Calculá **10–25 minutos** y **25–30 GB libres** la primera vez; los reinicios posteriores son instantáneos.
 
@@ -65,9 +66,10 @@ Tenés scripts listos para levantar y apagar todo el stack leyendo los parámetr
    ```
 
 ### Opciones útiles en ambos sistemas
-- **Elegir perfil sin editar `.env`:** pasá `watcher` (por defecto), `4060` o `3090`, por ejemplo:
-  - `start.bat 3090` / `./start.sh 3090`
-  - `stop.bat 3090` / `./stop.sh 3090`
+- **Elegir perfil sin editar `.env`:** pasá `watcher` / `watcher-4060` (por defecto), `watcher-3090`, `4060` o `3090`, por ejemplo:
+  - `start.bat watcher-3090` / `./start.sh watcher-3090`
+  - `stop.bat watcher-3090` / `./stop.sh watcher-3090`
+  - `start.bat 3090` / `./start.sh 3090` (solo WebUI)
 - **Forzar recompilación de la imagen:** `start.bat --build` / `./start.sh --build` (si `mineru:4-vllm` no existe todavía, compila automáticamente; si ya existe, arranca directo sin reconstruir).
 - **Solo pausar contenedores sin eliminarlos (`stop` en lugar de `down`):** `stop.bat --keep` / `./stop.sh --keep`.
 - **Ver el comando sin ejecutarlo:** `start.bat --dry-run` / `./start.sh --dry-run`.
@@ -79,9 +81,10 @@ Tenés scripts listos para levantar y apagar todo el stack leyendo los parámetr
 1. Abrí **Arcane** → **Projects** → **New Project**.
 2. Asigná un nombre al proyecto (por ejemplo `mineru-ocr`).
 3. Pegá el contenido completo de:
-   - [compose.rtx3090-24gb.yaml](compose.rtx3090-24gb.yaml) en la PC con RTX 3090,
-   - [compose.rtx4060-8gb.yaml](compose.rtx4060-8gb.yaml) en la notebook con RTX 4060 (solo WebUI), o
-   - [compose.watcher-rtx4060-8gb.yaml](compose.watcher-rtx4060-8gb.yaml) si querés **WebUI + carpeta vigilada automática** en lote.
+   - [compose.rtx3090-24gb.yaml](compose.rtx3090-24gb.yaml) en la PC con RTX 3090 (solo WebUI),
+   - [compose.rtx4060-8gb.yaml](compose.rtx4060-8gb.yaml) en la notebook con RTX 4060 (solo WebUI),
+   - [compose.watcher-rtx3090-24gb.yaml](compose.watcher-rtx3090-24gb.yaml) en la PC con RTX 3090 (**WebUI + carpeta vigilada**), o
+   - [compose.watcher-rtx4060-8gb.yaml](compose.watcher-rtx4060-8gb.yaml) en la notebook con RTX 4060 (**WebUI + carpeta vigilada**).
 4. Si necesitás cambiar la base a `cu129` o ajustar `device_ids` (en caso de tener múltiples GPUs NVIDIA, consultá `nvidia-smi -L`), editalo ahí mismo.
 5. Hacé clic en **Build & Deploy** y esperá a que finalice la construcción y el contenedor `mineru-webui` (y `mineru-vlm` en la configuración de 8 GB) quede en estado **Healthy**.
 6. Abrí en tu navegador `http://<IP-DEL-EQUIPO>:7860`.
@@ -95,7 +98,7 @@ Tenés scripts listos para levantar y apagar todo el stack leyendo los parámetr
 
 ## Modo Watcher (procesamiento automático en lote + WebUI activa)
 
-[compose.watcher-rtx4060-8gb.yaml](compose.watcher-rtx4060-8gb.yaml) mantiene la WebUI de 1 archivo en `http://localhost:7860`, pero ambos flujos (`mineru-webui` y `mineru-watcher`) envían trabajos a una única cola compartida en `mineru-api` (puerto `8000`) respaldada por `mineru-vlm`, evitando duplicar memoria GPU.
+Tanto [compose.watcher-rtx4060-8gb.yaml](compose.watcher-rtx4060-8gb.yaml) (8 GB VRAM) como [compose.watcher-rtx3090-24gb.yaml](compose.watcher-rtx3090-24gb.yaml) (24 GB VRAM) mantienen la WebUI de 1 archivo en `http://localhost:7860`, enviando tanto los archivos de la interfaz como los del lote (`mineru-watcher`) a una única cola compartida en `mineru-api` (puerto `8000`) respaldada por `mineru-vlm`.
 
 ### Directorios configurables
 Podés definir las rutas en el `.env` de Arcane (o cambiar directamente los valores por defecto en `volumes:`):

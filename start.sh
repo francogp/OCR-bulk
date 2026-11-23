@@ -10,12 +10,14 @@ ARG_COMPOSE=""
 
 show_help() {
   cat <<'EOF'
-Uso: ./start.sh [watcher|4060|3090|archivo.yaml] [--build] [--dry-run] [-h|--help]
+Uso: ./start.sh [watcher|watcher-4060|watcher-3090|4060|3090|archivo.yaml] [--build] [--dry-run] [-h|--help]
 
 Perfiles disponibles:
-  watcher   WebUI + Watcher automatico + API (compose.watcher-rtx4060-8gb.yaml)
-  4060      Solo WebUI para RTX 4060 8 GB    (compose.rtx4060-8gb.yaml)
-  3090      Solo WebUI para RTX 3090 24 GB   (compose.rtx3090-24gb.yaml)
+  watcher       WebUI + Watcher 4060 8 GB  (compose.watcher-rtx4060-8gb.yaml)
+  watcher-4060  WebUI + Watcher 4060 8 GB  (compose.watcher-rtx4060-8gb.yaml)
+  watcher-3090  WebUI + Watcher 3090 24 GB (compose.watcher-rtx3090-24gb.yaml)
+  4060          Solo WebUI RTX 4060 8 GB   (compose.rtx4060-8gb.yaml)
+  3090          Solo WebUI RTX 3090 24 GB  (compose.rtx3090-24gb.yaml)
 
 Opciones:
   --build     Fuerza la recompilacion de la imagen Docker
@@ -68,8 +70,11 @@ while [[ $# -gt 0 ]]; do
     --build)
       FORCE_BUILD=1
       ;;
-    watcher)
+    watcher|watcher-4060)
       ARG_COMPOSE="compose.watcher-rtx4060-8gb.yaml"
+      ;;
+    watcher-3090)
+      ARG_COMPOSE="compose.watcher-rtx3090-24gb.yaml"
       ;;
     4060)
       ARG_COMPOSE="compose.rtx4060-8gb.yaml"
@@ -107,7 +112,9 @@ if [[ ! -f "$COMPOSE_FILE" ]]; then
   exit 1
 fi
 
-if [[ "$COMPOSE_FILE" == "compose.watcher-rtx4060-8gb.yaml" ]]; then
+IS_WATCHER=0
+if [[ "$COMPOSE_FILE" == "compose.watcher-rtx4060-8gb.yaml" || "$COMPOSE_FILE" == "compose.watcher-rtx3090-24gb.yaml" ]]; then
+  IS_WATCHER=1
   MINERU_INPUT_DIR="${MINERU_INPUT_DIR:-./libros/entrada}"
   MINERU_OUTPUT_DIR="${MINERU_OUTPUT_DIR:-./libros/salida}"
   MINERU_PROCESSED_DIR="${MINERU_PROCESSED_DIR:-./libros/procesados}"
@@ -142,7 +149,7 @@ fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY-RUN] Compose: $COMPOSE_FILE"
-  if [[ "$COMPOSE_FILE" == "compose.watcher-rtx4060-8gb.yaml" ]]; then
+  if [[ "$IS_WATCHER" -eq 1 ]]; then
     [[ -n "${MINERU_INPUT_DIR:-}" ]] && echo "[DRY-RUN] Entrada: $MINERU_INPUT_DIR"
     [[ -n "${MINERU_OUTPUT_DIR:-}" ]] && echo "[DRY-RUN] Salida:  $MINERU_OUTPUT_DIR"
   fi
@@ -162,7 +169,7 @@ echo
 docker compose -f "$COMPOSE_FILE" ps
 echo
 echo "[OK] WebUI disponible en: http://localhost:${MINERU_WEBUI_PORT}"
-if [[ "$COMPOSE_FILE" == "compose.watcher-rtx4060-8gb.yaml" ]]; then
+if [[ "$IS_WATCHER" -eq 1 ]]; then
   echo "[OK] API OpenAPI docs:    http://localhost:${MINERU_API_PORT}/docs"
   echo "[OK] Carpeta entrada:     ${MINERU_INPUT_DIR}"
   echo "[OK] Carpeta salida:      ${MINERU_OUTPUT_DIR}"

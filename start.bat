@@ -25,6 +25,10 @@ if /i "!ARG!"=="--dry-run" (
     set "NO_PAUSE=1"
 ) else if /i "!ARG!"=="watcher" (
     set "ARG_COMPOSE=compose.watcher-rtx4060-8gb.yaml"
+) else if /i "!ARG!"=="watcher-4060" (
+    set "ARG_COMPOSE=compose.watcher-rtx4060-8gb.yaml"
+) else if /i "!ARG!"=="watcher-3090" (
+    set "ARG_COMPOSE=compose.watcher-rtx3090-24gb.yaml"
 ) else if /i "!ARG!"=="4060" (
     set "ARG_COMPOSE=compose.rtx4060-8gb.yaml"
 ) else if /i "!ARG!"=="3090" (
@@ -77,7 +81,11 @@ if not exist "!COMPOSE_FILE!" (
     goto finish
 )
 
-if /i "!COMPOSE_FILE!"=="compose.watcher-rtx4060-8gb.yaml" (
+set "IS_WATCHER=0"
+if /i "!COMPOSE_FILE!"=="compose.watcher-rtx4060-8gb.yaml" set "IS_WATCHER=1"
+if /i "!COMPOSE_FILE!"=="compose.watcher-rtx3090-24gb.yaml" set "IS_WATCHER=1"
+
+if "!IS_WATCHER!"=="1" (
     if not defined MINERU_INPUT_DIR set "MINERU_INPUT_DIR=.\libros\entrada"
     if not defined MINERU_OUTPUT_DIR set "MINERU_OUTPUT_DIR=.\libros\salida"
     if not defined MINERU_PROCESSED_DIR set "MINERU_PROCESSED_DIR=.\libros\procesados"
@@ -113,7 +121,7 @@ if "!FORCE_BUILD!"=="1" (
 
 if "!DRY_RUN!"=="1" (
     echo [DRY-RUN] Compose: !COMPOSE_FILE!
-    if /i "!COMPOSE_FILE!"=="compose.watcher-rtx4060-8gb.yaml" (
+    if "!IS_WATCHER!"=="1" (
         if defined MINERU_INPUT_DIR echo [DRY-RUN] Entrada: !MINERU_INPUT_DIR!
         if defined MINERU_OUTPUT_DIR echo [DRY-RUN] Salida:  !MINERU_OUTPUT_DIR!
     )
@@ -142,7 +150,7 @@ echo.
 docker compose -f "!COMPOSE_FILE!" ps
 echo.
 echo [OK] WebUI disponible en: http://localhost:!MINERU_WEBUI_PORT!
-if /i "!COMPOSE_FILE!"=="compose.watcher-rtx4060-8gb.yaml" (
+if "!IS_WATCHER!"=="1" (
     echo [OK] API OpenAPI docs:    http://localhost:!MINERU_API_PORT!/docs
     echo [OK] Carpeta entrada:     !MINERU_INPUT_DIR!
     echo [OK] Carpeta salida:      !MINERU_OUTPUT_DIR!
@@ -160,12 +168,14 @@ if "!DRY_RUN!"=="0" (
 goto :eof
 
 :show_help
-echo Uso: start.bat [watcher^|4060^|3090^|archivo.yaml] [--build] [--dry-run] [--no-pause] [-h^|--help]
+echo Uso: start.bat [watcher^|watcher-4060^|watcher-3090^|4060^|3090^|archivo.yaml] [--build] [--dry-run] [--no-pause] [-h^|--help]
 echo.
 echo Perfiles disponibles:
-echo   watcher   WebUI + Watcher automatico + API (compose.watcher-rtx4060-8gb.yaml)
-echo   4060      Solo WebUI para RTX 4060 8 GB    (compose.rtx4060-8gb.yaml)
-echo   3090      Solo WebUI para RTX 3090 24 GB   (compose.rtx3090-24gb.yaml)
+echo   watcher       WebUI + Watcher 4060 8 GB  (compose.watcher-rtx4060-8gb.yaml)
+echo   watcher-4060  WebUI + Watcher 4060 8 GB  (compose.watcher-rtx4060-8gb.yaml)
+echo   watcher-3090  WebUI + Watcher 3090 24 GB (compose.watcher-rtx3090-24gb.yaml)
+echo   4060          Solo WebUI RTX 4060 8 GB   (compose.rtx4060-8gb.yaml)
+echo   3090          Solo WebUI RTX 3090 24 GB  (compose.rtx3090-24gb.yaml)
 echo.
 echo Opciones:
 echo   --build     Fuerza la recompilacion de la imagen Docker

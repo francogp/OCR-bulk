@@ -10,7 +10,7 @@ ARG_COMPOSE=""
 
 show_help() {
   cat <<'EOF'
-Uso: ./stop.sh [watcher|4060|3090|archivo.yaml] [--keep] [--dry-run] [-h|--help]
+Uso: ./stop.sh [watcher|watcher-4060|watcher-3090|4060|3090|archivo.yaml] [--keep] [--dry-run] [-h|--help]
 
 Opciones:
   --keep      Solo detiene los contenedores (stop) sin removerlos (por defecto usa down)
@@ -51,8 +51,11 @@ while [[ $# -gt 0 ]]; do
     --keep)
       KEEP_CONTAINERS=1
       ;;
-    watcher)
+    watcher|watcher-4060)
       ARG_COMPOSE="compose.watcher-rtx4060-8gb.yaml"
+      ;;
+    watcher-3090)
+      ARG_COMPOSE="compose.watcher-rtx3090-24gb.yaml"
       ;;
     4060)
       ARG_COMPOSE="compose.rtx4060-8gb.yaml"

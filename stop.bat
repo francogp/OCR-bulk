@@ -25,6 +25,10 @@ if /i "!ARG!"=="--dry-run" (
     set "NO_PAUSE=1"
 ) else if /i "!ARG!"=="watcher" (
     set "ARG_COMPOSE=compose.watcher-rtx4060-8gb.yaml"
+) else if /i "!ARG!"=="watcher-4060" (
+    set "ARG_COMPOSE=compose.watcher-rtx4060-8gb.yaml"
+) else if /i "!ARG!"=="watcher-3090" (
+    set "ARG_COMPOSE=compose.watcher-rtx3090-24gb.yaml"
 ) else if /i "!ARG!"=="4060" (
     set "ARG_COMPOSE=compose.rtx4060-8gb.yaml"
 ) else if /i "!ARG!"=="3090" (
@@ -101,7 +105,7 @@ if "!KEEP_CONTAINERS!"=="1" (
 goto finish
 
 :show_help
-echo Uso: stop.bat [watcher^|4060^|3090^|archivo.yaml] [--keep] [--dry-run] [--no-pause] [-h^|--help]
+echo Uso: stop.bat [watcher^|watcher-4060^|watcher-3090^|4060^|3090^|archivo.yaml] [--keep] [--dry-run] [--no-pause] [-h^|--help]
 echo.
 echo Opciones:
 echo   --keep      Solo detiene los contenedores ^(stop^) sin removerlos ^(por defecto usa down^)
