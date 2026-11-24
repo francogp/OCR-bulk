@@ -76,6 +76,7 @@ services:
     environment:
       MINERU_MODEL_SOURCE: local
       MINERU_MODEL_VLM_SERVER_URL: http://mineru-vlm:30000/v1
+      MINERU_PROCESSING_WINDOW_SIZE: "${MINERU_PROCESSING_WINDOW_SIZE:-32}"
       MINERU_TELEMETRY_DISABLED: "1"
       TZ: ${TZ:-America/Argentina/Buenos_Aires}
     entrypoint: ["mineru-kit"]
@@ -91,6 +92,8 @@ services:
       - "1"
       - --vlm-server-url
       - http://mineru-vlm:30000/v1
+      - --vlm-max-concurrency
+      - "${MINERU_VLM_MAX_CONCURRENCY:-16}"
     ipc: host
     ulimits:
       memlock: -1
@@ -167,6 +170,8 @@ services:
       WATCH_POLL_INTERVAL: "${WATCH_POLL_INTERVAL:-5}"
       WATCH_STABLE_SECONDS: "${WATCH_STABLE_SECONDS:-3}"
       WATCH_TIMEOUT_SECONDS: "${WATCH_TIMEOUT_SECONDS:-3600}"
+      WATCH_MAX_RETRIES: "${WATCH_MAX_RETRIES:-3}"
+      WATCH_RETRY_DELAY: "${WATCH_RETRY_DELAY:-15}"
     entrypoint: ["python3", "-u", "-c"]
     command:
       - |
@@ -177,6 +182,7 @@ services:
         from datetime import datetime
         from pathlib import Path
 
+        import httpx
         from mineru.parser import MinerUApiParser
         from mineru.parser.writer import FileBasedDataWriter
 
@@ -198,6 +204,8 @@ services:
         POLL_INTERVAL = max(1.0, float(os.environ.get("WATCH_POLL_INTERVAL", "5")))
         STABLE_SECONDS = max(0.5, float(os.environ.get("WATCH_STABLE_SECONDS", "3")))
         TIMEOUT_SECONDS = max(60.0, float(os.environ.get("WATCH_TIMEOUT_SECONDS", "3600")))
+        MAX_RETRIES = max(1, int(os.environ.get("WATCH_MAX_RETRIES", "3")))
+        RETRY_DELAY = max(1.0, float(os.environ.get("WATCH_RETRY_DELAY", "15")))
         TEMP_SUFFIXES = (".part", ".tmp", ".crdownload")
 
         for folder in (INPUT_DIR, OUTPUT_DIR, PROCESSED_DIR, FAILED_DIR, ERROR_REPORT.parent):
@@ -224,13 +232,31 @@ services:
                 time.sleep(STABLE_SECONDS)
             return path.exists() and path.stat().st_size > 0
 
-        def append_error(filename: str, exc: BaseException) -> None:
+        def wait_for_api_ready() -> None:
+            health_url = f"{API_URL.rstrip('/')}/v1/health"
+            announced = False
+            while True:
+                try:
+                    resp = httpx.get(health_url, timeout=5.0)
+                    if resp.status_code == 200:
+                        if announced:
+                            print("[watcher] API disponible nuevamente.")
+                        return
+                except Exception:
+                    pass
+                if not announced:
+                    print(f"[watcher] Esperando a que {health_url} este listo...")
+                    announced = True
+                time.sleep(5)
+
+        def append_error(filename: str, exc: BaseException, attempts: int) -> None:
             is_new = not ERROR_REPORT.exists()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
             tb_lines = tb.strip().splitlines()[-15:]
             entry = (
                 f"## {timestamp} - `{filename}`\n\n"
+                f"- **Intentos:** {attempts}\n"
                 f"- **Error:** `{type(exc).__name__}: {exc}`\n\n"
                 "```text\n"
                 + "\n".join(tb_lines)
@@ -263,7 +289,7 @@ services:
 
         print(
             f"[watcher] Vigilando {INPUT_DIR} -> {OUTPUT_DIR} "
-            f"(tier={TIER}, ocr_mode={OCR_MODE}, api={API_URL})"
+            f"(tier={TIER}, ocr_mode={OCR_MODE}, retries={MAX_RETRIES}, api={API_URL})"
         )
 
         while True:
@@ -281,25 +307,39 @@ services:
                         print(f"[watcher] Saltando archivo incompleto o eliminado: {src.name}")
                         continue
 
-                    tmp_out = OUTPUT_DIR / f".tmp_{src.stem}_{int(time.time())}"
-                    started = time.time()
-                    try:
-                        print(f"[watcher] Procesando: {src.name}")
-                        result = parser.parse(str(src))
-                        tmp_out.mkdir(parents=True, exist_ok=True)
-                        result.save(FileBasedDataWriter(str(tmp_out)))
-                        final_out = unique_path(OUTPUT_DIR, src.stem)
-                        tmp_out.rename(final_out)
-                        moved_src = unique_path(PROCESSED_DIR, src.name)
-                        shutil.move(str(src), str(moved_src))
-                        elapsed = time.time() - started
-                        print(
-                            f"[watcher] OK ({elapsed:.1f}s): {src.name} -> {final_out.name}"
-                        )
-                    except Exception as exc:
-                        shutil.rmtree(tmp_out, ignore_errors=True)
-                        print(f"[watcher] ERROR procesando {src.name}: {exc}")
-                        append_error(src.name, exc)
+                    last_exc = None
+                    succeeded = False
+                    for attempt in range(1, MAX_RETRIES + 1):
+                        wait_for_api_ready()
+                        tmp_out = OUTPUT_DIR / f".tmp_{src.stem}_{int(time.time())}"
+                        started = time.time()
+                        try:
+                            suffix = "" if attempt == 1 else f" (reintento {attempt}/{MAX_RETRIES})"
+                            print(f"[watcher] Procesando: {src.name}{suffix}")
+                            result = parser.parse(str(src))
+                            tmp_out.mkdir(parents=True, exist_ok=True)
+                            result.save(FileBasedDataWriter(str(tmp_out)))
+                            final_out = unique_path(OUTPUT_DIR, src.stem)
+                            tmp_out.rename(final_out)
+                            moved_src = unique_path(PROCESSED_DIR, src.name)
+                            shutil.move(str(src), str(moved_src))
+                            elapsed = time.time() - started
+                            print(
+                                f"[watcher] OK ({elapsed:.1f}s): {src.name} -> {final_out.name}"
+                            )
+                            succeeded = True
+                            break
+                        except Exception as exc:
+                            last_exc = exc
+                            shutil.rmtree(tmp_out, ignore_errors=True)
+                            print(
+                                f"[watcher] Error intento {attempt}/{MAX_RETRIES} para {src.name}: {exc}"
+                            )
+                            if attempt < MAX_RETRIES:
+                                time.sleep(RETRY_DELAY)
+
+                    if not succeeded and last_exc is not None:
+                        append_error(src.name, last_exc, MAX_RETRIES)
                         if src.exists():
                             failed_dest = unique_path(FAILED_DIR, src.name)
                             shutil.move(str(src), str(failed_dest))

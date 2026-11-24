@@ -108,12 +108,14 @@ Podés definir las rutas en el `.env` de Arcane (o cambiar directamente los valo
 - `MINERU_FAILED_DIR` (por defecto `./libros/fallidos`): mueve acá los archivos que fallen para no trabar la cola.
 
 ### Opciones del watcher y reporte de errores
-En `mineru-watcher` → `environment:` podés ajustar:
-- `WATCH_ERROR_REPORT` (por defecto `/data/salida/errores.md`): documento Markdown donde se registra fecha/hora, nombre de archivo, error y traza de cada archivo fallido.
+En `mineru-watcher` → `environment:` (o vía `.env`) podés ajustar:
+- `WATCH_ERROR_REPORT` (por defecto `/data/salida/errores.md`): documento Markdown donde se registra fecha/hora, intentos, nombre de archivo, error y traza de cada archivo fallido.
 - `WATCH_TIER`: `flash`, `basic` o `standard` (o `advanced` en la RTX 3090).
 - `WATCH_OCR_MODE`: `ocr` (recomendado para libros escaneados), `auto` o `txt`.
 - `WATCH_EXTENSIONS`: extensiones vigiladas (`.pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff`).
 - `WATCH_POLL_INTERVAL` / `WATCH_STABLE_SECONDS`: frecuencia de sondeo y espera hasta que el archivo termine de copiarse.
+- `WATCH_MAX_RETRIES` / `WATCH_RETRY_DELAY` (`3` intentos / `15` s por defecto): espera automática a `/v1/health` y reintentos ante reinicios o cortes momentáneos antes de mover el archivo a `_fallidos`.
+- `MINERU_PROCESSING_WINDOW_SIZE` / `MINERU_VLM_MAX_CONCURRENCY` (`16` / `8` en 4060 8 GB y `32` / `16` en 3090 24 GB): limita picos de RAM/VRAM en libros grandes y evita saturar `mineru-vlm`.
 
 Para ver el avance del lote en vivo:
 ```bash
